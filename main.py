@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request, Header
+from fastapi import FastAPI, Request, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import os
 import re
@@ -63,7 +63,7 @@ async def honeypot(request: Request, x_api_key: str = Header(None)):
     
     # Authentication
     if x_api_key != API_KEY:
-        return {"error": "unauthorized"}
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
     try:
         body = await request.json()
