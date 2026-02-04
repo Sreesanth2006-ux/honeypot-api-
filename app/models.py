@@ -1,17 +1,18 @@
 """
 Pydantic models for request/response validation.
+Flexible to accept various input formats from hackathon.
 """
 
-from typing import List, Optional, Dict, Any
-from pydantic import BaseModel, Field
+from typing import List, Optional, Dict, Any, Union
+from pydantic import BaseModel, Field, field_validator
 from datetime import datetime
 
 
 class Message(BaseModel):
     """Incoming message from the conversation."""
-    sender: str = Field(..., description="Sender identifier (e.g., 'scammer', 'user')")
+    sender: str = Field(default="scammer", description="Sender identifier")
     text: str = Field(..., description="Message content")
-    timestamp: str = Field(..., description="ISO format timestamp")
+    timestamp: Optional[str] = Field(default=None, description="ISO format timestamp")
 
 
 class Metadata(BaseModel):
@@ -22,17 +23,65 @@ class Metadata(BaseModel):
 
 
 class ScamDetectionRequest(BaseModel):
-    """Request payload for scam detection endpoint."""
-    sessionId: str = Field(..., description="Unique session identifier")
-    message: Message = Field(..., description="Current message to analyze")
-    conversationHistory: List[Message] = Field(
-        default_factory=list, 
-        description="Previous messages in the conversation"
-    )
-    metadata: Metadata = Field(
-        default_factory=Metadata, 
-        description="Conversation metadata"
-    )
+    """
+    Flexible request payload for scam detection endpoint.
+    Accepts various formats from hackathon tester.
+    """
+    # Try multiple field names for session ID
+    sessionId: Optional[str] = Field(default=None, description="Session ID")
+    session_id: Optional[str] = Field(default=None, description="Session ID (snake_case)")
+    
+    # Message can be a Message object OR just a string
+    message: Optional[Union[Message, str, Dict[str, Any]]] = Field(default=None)
+    text: Optional[str] = Field(default=None, description="Direct text field")
+    content: Optional[str] = Field(default=None, description="Content field")
+    
+    # Optional conversation history
+    conversationHistory: Optional[List[Message]] = Field(default_factory=list)
+    conversation_history: Optional[List[Dict]] = Field(default=None)
+    
+    # Optional metadata
+    metadata: Optional[Metadata] = Field(default_factory=Metadata)
+    
+    def get_session_id(self) -> str:
+        """Get session ID from various possible fields."""
+        return self.sessionId or self.session_id or f"session-{datetime.utcnow().timestamp()}"
+    
+    def get_message_text(self) -> str:
+        """Extract message text from various possible fields."""
+        # Direct text field
+        if self.text:
+            return self.text
+        if self.content:
+            return self.content
+        
+        # Message as string
+        if isinstance(self.message, str):
+            return self.message
+        
+        # Message as dict
+        if isinstance(self.message, dict):
+            return self.message.get("text", "") or self.message.get("content", "")
+        
+        # Message as Message object
+        if self.message and hasattr(self.message, "text"):
+            return self.message.text
+        
+        return ""
+    
+    def get_message_object(self) -> Message:
+        """Get a proper Message object."""
+        text = self.get_message_text()
+        sender = "scammer"
+        timestamp = datetime.utcnow().isoformat()
+        
+        if isinstance(self.message, Message):
+            return self.message
+        elif isinstance(self.message, dict):
+            sender = self.message.get("sender", "scammer")
+            timestamp = self.message.get("timestamp", timestamp)
+        
+        return Message(sender=sender, text=text, timestamp=timestamp)
 
 
 class ScamDetectionResponse(BaseModel):

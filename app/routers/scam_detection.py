@@ -44,11 +44,12 @@ async def detect_scam(
     Returns:
         ScamDetectionResponse with status and AI-generated reply
     """
-    session_id = request.sessionId
-    message = request.message
-    history = request.conversationHistory
+    # Use flexible parsing methods
+    session_id = request.get_session_id()
+    message = request.get_message_object()
+    history = request.conversationHistory or []
     
-    logger.info(f"Processing message for session {session_id}: {message.text[:50]}...")
+    logger.info(f"Processing message for session {session_id}: {message.text[:50] if message.text else 'empty'}...")
     
     # Step 1: Detect scam patterns
     detection_result = scam_detector.analyze(message, history)
