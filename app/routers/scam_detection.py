@@ -3,6 +3,9 @@ Scam detection router.
 Handles the /api/scam-detection endpoint.
 """
 
+from typing import List, Optional, Dict, Any
+import time
+from datetime import datetime
 from fastapi import APIRouter, Depends, BackgroundTasks
 from app.auth import verify_api_key
 from app.models import (
@@ -22,34 +25,52 @@ router = APIRouter(prefix="/api", tags=["scam-detection"])
 
 @router.post("/scam-detection", response_model=ScamDetectionResponse)
 async def detect_scam(
-    request: ScamDetectionRequest,
+    request_data: Dict[str, Any],
     background_tasks: BackgroundTasks,
     api_key: str = Depends(verify_api_key)
 ) -> ScamDetectionResponse:
     """
-    Analyze incoming message for scam patterns and generate an engaging response.
-    
-    This endpoint:
-    1. Analyzes the message for scam indicators
-    2. Extracts intelligence (bank accounts, UPI IDs, phone numbers, URLs)
-    3. Generates a human-like response to engage the sender
-    4. Tracks conversation state for the session
-    5. Triggers final callback when sufficient engagement is reached
-    
-    Args:
-        request: ScamDetectionRequest with message and session info
-        background_tasks: FastAPI background tasks for async callback
-        api_key: Validated API key from header
-        
-    Returns:
-        ScamDetectionResponse with status and AI-generated reply
+    Analyze incoming message. Accepts ANY JSON format.
     """
-    # Use flexible parsing methods
-    session_id = request.get_session_id()
-    message = request.get_message_object()
-    history = request.conversationHistory or []
+    # 1. Flexible parsing of Session ID
+    session_id = request_data.get("sessionId") or request_data.get("session_id") or f"session-{int(time.time())}"
     
-    logger.info(f"Processing message for session {session_id}: {message.text[:50] if message.text else 'empty'}...")
+    # 2. Flexible parsing of Message Text
+    text = ""
+    # Check for 'message' field (string or dict)
+    msg_field = request_data.get("message")
+    if isinstance(msg_field, str):
+        text = msg_field
+    elif isinstance(msg_field, dict):
+        text = msg_field.get("text") or msg_field.get("content") or ""
+    
+    # Check for direct 'text' or 'content' fields
+    if not text:
+        text = request_data.get("text") or request_data.get("content") or ""
+        
+    # Fallback if empty
+    if not text:
+        text = "Hello"  # Default to avoid empty errors
+        
+    # Create Message object
+    message = Message(
+        sender="scammer",
+        text=text,
+        timestamp=datetime.utcnow().isoformat()
+    )
+    
+    # 3. Flexible parsing of History
+    history_data = request_data.get("conversationHistory") or request_data.get("conversation_history") or []
+    history = []
+    for item in history_data:
+        if isinstance(item, dict):
+            history.append(Message(
+                sender=item.get("sender", "user"), 
+                text=item.get("text", "") or item.get("content", ""),
+                timestamp=item.get("timestamp")
+            ))
+    
+    logger.info(f"Processing message for session {session_id}: {text[:50]}...")
     
     # Step 1: Detect scam patterns
     detection_result = scam_detector.analyze(message, history)
