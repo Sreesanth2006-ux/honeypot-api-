@@ -4,6 +4,7 @@ import os
 import re
 import openai
 from datetime import datetime
+import httpx
 
 # ================= CONFIG =================
 
@@ -36,14 +37,17 @@ sessions = {}
 UPI_REGEX = r"[a-zA-Z0-9.\-_]{2,}@[a-zA-Z]{2,}"
 BANK_REGEX = r"\b\d{9,18}\b"
 URL_REGEX = r"https?://\S+"
+PHONE_REGEX = r"\+91[0-9]{10}|\b[0-9]{10}\b"
 
 # ================= UTIL =================
 
 def extract(text):
     return {
-        "upi_ids": list(set(re.findall(UPI_REGEX, text))),
-        "bank_accounts": list(set(re.findall(BANK_REGEX, text))),
-        "phishing_urls": list(set(re.findall(URL_REGEX, text)))
+        "bankAccounts": list(set(re.findall(BANK_REGEX, text))),
+        "upiIds": list(set(re.findall(UPI_REGEX, text))),
+        "phishingLinks": list(set(re.findall(URL_REGEX, text))),
+        "phoneNumbers": list(set(re.findall(PHONE_REGEX, text))),
+        "suspiciousKeywords": [k for k in ["urgent", "verify", "pan", "kyc", "block", "suspend", "otp", "account"] if k in text.lower()]
     }
 
 # ================= ROOT =================
@@ -64,7 +68,8 @@ def ping():
 
 @app.post("/")
 async def honeypot(request: Request, x_api_key: str = Header(None)):
-
+    
+    # Authentication
     if x_api_key != API_KEY:
         return {"error": "unauthorized"}
 
@@ -73,43 +78,44 @@ async def honeypot(request: Request, x_api_key: str = Header(None)):
     except Exception:
         body = {}
 
-    session_id = body.get("conversation_id") or body.get("session_id") or "default"
-    # Handle message being a dict or string
-    msg_raw = body.get("message") or body.get("content") or ""
-    if isinstance(msg_raw, dict):
-        message = msg_raw.get("text") or msg_raw.get("content") or ""
+    # Parse request according to hackathon format
+    session_id = body.get("sessionId", "default")
+    
+    # Extract message text from nested structure
+    message_obj = body.get("message", {})
+    if isinstance(message_obj, dict):
+        message_text = message_obj.get("text", "")
     else:
-        message = str(msg_raw)
+        message_text = str(message_obj)
+    
+    # Get conversation history
+    conversation_history = body.get("conversationHistory", [])
 
+    # Initialize session if new
     if session_id not in sessions:
         sessions[session_id] = {
             "history": [],
             "turns": 0,
             "intel": {
-                "upi_ids": [],
-                "bank_accounts": [],
-                "phishing_urls": []
+                "bankAccounts": [],
+                "upiIds": [],
+                "phishingLinks": [],
+                "phoneNumbers": [],
+                "suspiciousKeywords": []
             }
         }
 
     session = sessions[session_id]
 
-    session["history"].append({"role": "user", "content": message})
+    # Add scammer message to history
+    session["history"].append({"role": "user", "content": message_text})
 
     # ================= SCAM DETECTION =================
 
-    detect_prompt = f"""
-Reply only YES or NO.
-Is this a scam message?
-
-Message:
-{message}
-"""
-    
-    # Use Fallback if no OpenAI Key
     scam_detected = False
     if client:
         try:
+            detect_prompt = f"Reply only YES or NO. Is this a scam message?\n\nMessage:\n{message_text}"
             detect = client.chat.completions.create(
                 model="gpt-3.5-turbo",
                 messages=[{"role": "user", "content": detect_prompt}]
@@ -117,25 +123,23 @@ Message:
             scam_detected = "yes" in detect.choices[0].message.content.lower()
         except Exception as e:
             print(f"OpenAI Error: {e}")
-            scam_detected = True # Fail safe
+            scam_detected = True  # Fail safe
     else:
         # Simple keyword fallback
-        scam_detected = any(k in message.lower() for k in ["urgent", "verify", "pan", "kyc", "block", "suspend"])
+        scam_detected = any(k in message_text.lower() for k in ["urgent", "verify", "pan", "kyc", "block", "suspend", "otp", "account"])
 
     reply = "Okay."
 
     # ================= AGENT =================
 
     if scam_detected:
-
-        agent_prompt = """
-You are an Indian person.
+        agent_prompt = """You are an Indian person.
 You believe the scammer.
 Be polite and slow.
 Try to get UPI ID, bank account, or payment link.
 Never reveal scam detection.
 Ask natural questions.
-"""
+Keep responses short and simple."""
         
         if client:
             try:
@@ -148,30 +152,53 @@ Ask natural questions.
                 )
                 reply = response.choices[0].message.content
             except Exception:
-                reply = "Okay sure, please tell me what to do?"
+                reply = "Why is this happening? What should I do?"
         else:
-            reply = "I am worried. Please help me fix this."
+            # Fallback responses
+            replies = [
+                "Why is my account being suspended?",
+                "What do I need to do?",
+                "Is this urgent?",
+                "How can I fix this?"
+            ]
+            reply = replies[session["turns"] % len(replies)]
 
         session["history"].append({"role": "assistant", "content": reply})
         session["turns"] += 1
 
-        intel = extract(message + " " + reply)
-
+        # Extract intelligence
+        intel = extract(message_text + " " + reply)
         for k in intel:
             session["intel"][k].extend(intel[k])
             session["intel"][k] = list(set(session["intel"][k]))
 
-    # ================= RESPONSE =================
+        # ================= FINAL CALLBACK =================
+        # Send callback after sufficient engagement (8+ turns)
+        if session["turns"] >= 8:
+            try:
+                callback_payload = {
+                    "sessionId": session_id,
+                    "scamDetected": True,
+                    "totalMessagesExchanged": session["turns"],
+                    "extractedIntelligence": session["intel"],
+                    "agentNotes": f"Scammer engaged for {session['turns']} turns. Intelligence extracted."
+                }
+                
+                async with httpx.AsyncClient() as http_client:
+                    await http_client.post(
+                        "https://hackathon.guvi.in/api/updateHoneyPotFinalResult",
+                        json=callback_payload,
+                        timeout=5
+                    )
+                print(f"✅ Final callback sent for session {session_id}")
+            except Exception as e:
+                print(f"❌ Callback failed: {e}")
 
+    # ================= RESPONSE (HACKATHON FORMAT) =================
+    
     return {
         "status": "success",
-        "timestamp": datetime.utcnow().isoformat(),
-        "session_id": session_id,
-        "scam_detected": scam_detected,
-        "agent_active": scam_detected,
-        "engagement_turns": session["turns"],
-        "intelligence": session["intel"],
-        "reply_to_scammer": reply
+        "reply": reply
     }
 
 # ================= HEALTH =================
