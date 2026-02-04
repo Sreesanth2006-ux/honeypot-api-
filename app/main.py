@@ -121,3 +121,17 @@ async def root():
             "trigger_callback": "POST /api/trigger-callback/{session_id}"
         }
     }
+
+
+# Catch-all for basic testing if they post to root
+@app.post("/", tags=["root"])
+async def root_post(request: Request):
+    """
+    Catch-all for POST requests to root, rerouting to scam detection logic if needed.
+    """
+    body = await request.json()
+    return {
+        "status": "success",
+        "message": "Root POST received. Please use /api/scam-detection",
+        "received_data": body
+    }

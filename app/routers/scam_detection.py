@@ -6,7 +6,7 @@ Handles the /api/scam-detection endpoint.
 from typing import List, Optional, Dict, Any
 import time
 from datetime import datetime
-from fastapi import APIRouter, Depends, BackgroundTasks
+from fastapi import APIRouter, Depends, BackgroundTasks, Request
 from app.auth import verify_api_key
 from app.models import (
     ScamDetectionRequest, 
@@ -25,13 +25,18 @@ router = APIRouter(prefix="/api", tags=["scam-detection"])
 
 @router.post("/scam-detection", response_model=ScamDetectionResponse)
 async def detect_scam(
-    request_data: Dict[str, Any],
+    request: Request,
     background_tasks: BackgroundTasks,
     api_key: str = Depends(verify_api_key)
 ) -> ScamDetectionResponse:
     """
-    Analyze incoming message. Accepts ANY JSON format.
+    Analyze incoming message. Accepts ANY request body.
     """
+    try:
+        request_data = await request.json()
+    except Exception:
+        request_data = {}
+        
     # 1. Flexible parsing of Session ID
     session_id = request_data.get("sessionId") or request_data.get("session_id") or f"session-{int(time.time())}"
     
