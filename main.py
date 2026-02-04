@@ -70,6 +70,13 @@ async def honeypot(request: Request, x_api_key: str = Header(None)):
     except Exception:
         body = {}
 
+    # Quick response for empty test requests
+    if not body or not body.get("message"):
+        return {
+            "status": "success",
+            "reply": "Ready to detect scams"
+        }
+
     # Parse request according to hackathon format
     session_id = body.get("sessionId", "default")
     
