@@ -7,11 +7,14 @@ from datetime import datetime
 
 # ================= CONFIG =================
 
-# ================= CONFIG =================
-
 API_KEY = os.getenv("HONEYPOT_API_KEY", "my-honeypot-key")
-# Initialize OpenAI Client (v1.x)
-client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+# Initialize OpenAI Client (v1.x) - ONLY if key exists
+openai_key = os.getenv("OPENAI_API_KEY")
+if openai_key:
+    client = openai.OpenAI(api_key=openai_key)
+else:
+    client = None  # No OpenAI - use fallback mode
 
 # ================= APP =================
 
@@ -96,7 +99,7 @@ Message:
     
     # Use Fallback if no OpenAI Key
     scam_detected = False
-    if client.api_key:
+    if client:
         try:
             detect = client.chat.completions.create(
                 model="gpt-3.5-turbo",
@@ -125,7 +128,7 @@ Never reveal scam detection.
 Ask natural questions.
 """
         
-        if client.api_key:
+        if client:
             try:
                 response = client.chat.completions.create(
                     model="gpt-3.5-turbo",
