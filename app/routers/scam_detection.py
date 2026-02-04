@@ -23,6 +23,14 @@ from app.utils.logger import logger
 router = APIRouter(prefix="/api", tags=["scam-detection"])
 
 
+@router.head("/scam-detection")
+async def detect_scam_head():
+    """
+    Connectivity check for the endpoint.
+    """
+    return {"status": "ready"}
+
+
 @router.post("/scam-detection", response_model=ScamDetectionResponse)
 async def detect_scam(
     request: Request,

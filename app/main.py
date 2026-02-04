@@ -1,137 +1,169 @@
-"""
-Agentic Honeypot API - Main Application
-A production-ready API that detects scam messages and autonomously engages scammers.
-"""
-
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from contextlib import asynccontextmanager
-import time
+import os
+import re
+import openai
+from datetime import datetime
 
-from app.config import settings
-from app.routers import scam_detection
-from app.utils.logger import logger
+# ================= CONFIG =================
 
+# ================= CONFIG =================
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Application lifespan handler."""
-    logger.info("🍯 Agentic Honeypot API starting up...")
-    logger.info(f"Callback URL: {settings.callback_url}")
-    logger.info(f"Scam threshold: {settings.scam_threshold}")
-    yield
-    logger.info("🍯 Agentic Honeypot API shutting down...")
+API_KEY = os.getenv("HONEYPOT_API_KEY", "my-honeypot-key")
+# Initialize OpenAI Client (v1.x)
+client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
+# ================= APP =================
 
-# Create FastAPI application
-app = FastAPI(
-    title="Agentic Honeypot API",
-    description="""
-    A production-ready API that detects scam messages and autonomously engages 
-    scammers to extract intelligence.
-    
-    ## Features
-    - 🔍 **Scam Detection**: Analyzes messages for scam patterns
-    - 🤖 **AI Agent**: Human-like responses using Claude AI
-    - 📊 **Intelligence Extraction**: Extracts bank accounts, UPI IDs, phone numbers, URLs
-    - 📝 **Session Management**: Tracks conversations per session
-    - 📡 **Automatic Callback**: Posts results to hackathon API when sufficient engagement
-    
-    ## Authentication
-    All endpoints require an API key via the `x-api-key` header.
-    """,
-    version="1.0.0",
-    lifespan=lifespan
-)
+app = FastAPI(title="Agentic Honeypot API")
 
-# Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure appropriately for production
-    allow_credentials=True,
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# ================= MEMORY =================
 
-# Request logging middleware
-@app.middleware("http")
-async def log_requests(request: Request, call_next):
-    """Log all incoming requests."""
-    start_time = time.time()
-    
-    response = await call_next(request)
-    
-    process_time = time.time() - start_time
-    logger.info(
-        f"{request.method} {request.url.path} - "
-        f"Status: {response.status_code} - "
-        f"Time: {process_time:.3f}s"
-    )
-    
-    return response
+sessions = {}
 
+# ================= REGEX =================
 
-# Global exception handler
-@app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception):
-    """Handle uncaught exceptions."""
-    logger.error(f"Unhandled exception: {exc}", exc_info=True)
-    return JSONResponse(
-        status_code=500,
-        content={
-            "status": "error",
-            "message": "Internal server error",
-            "detail": str(exc) if settings.log_level == "DEBUG" else None
-        }
-    )
+UPI_REGEX = r"[a-zA-Z0-9.\-_]{2,}@[a-zA-Z]{2,}"
+BANK_REGEX = r"\b\d{9,18}\b"
+URL_REGEX = r"https?://\S+"
 
+# ================= UTIL =================
 
-# Include routers
-app.include_router(scam_detection.router)
-
-
-# Health check endpoint
-@app.get("/health", tags=["health"])
-async def health_check():
-    """
-    Health check endpoint.
-    Returns the current status of the API.
-    """
+def extract(text):
     return {
-        "status": "healthy",
-        "service": "Agentic Honeypot API",
-        "version": "1.0.0"
+        "upi_ids": list(set(re.findall(UPI_REGEX, text))),
+        "bank_accounts": list(set(re.findall(BANK_REGEX, text))),
+        "phishing_urls": list(set(re.findall(URL_REGEX, text)))
     }
 
+# ================= ROOT =================
 
-@app.get("/", tags=["root"])
-async def root():
-    """
-    Root endpoint with API information.
-    """
-    return {
-        "message": "🍯 Welcome to the Agentic Honeypot API",
-        "documentation": "/docs",
-        "health": "/health",
-        "endpoints": {
-            "scam_detection": "POST /api/scam-detection",
-            "session_info": "GET /api/session/{session_id}",
-            "trigger_callback": "POST /api/trigger-callback/{session_id}"
+@app.head("/")
+@app.get("/")
+def ping():
+    return {"status": "ready"}
+
+@app.post("/")
+async def honeypot(request: Request, x_api_key: str = Header(None)):
+
+    if x_api_key != API_KEY:
+        return {"error": "unauthorized"}
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    session_id = body.get("conversation_id") or body.get("session_id") or "default"
+    # Handle message being a dict or string
+    msg_raw = body.get("message") or body.get("content") or ""
+    if isinstance(msg_raw, dict):
+        message = msg_raw.get("text") or msg_raw.get("content") or ""
+    else:
+        message = str(msg_raw)
+
+    if session_id not in sessions:
+        sessions[session_id] = {
+            "history": [],
+            "turns": 0,
+            "intel": {
+                "upi_ids": [],
+                "bank_accounts": [],
+                "phishing_urls": []
+            }
         }
-    }
 
+    session = sessions[session_id]
 
-# Catch-all for basic testing if they post to root
-@app.post("/", tags=["root"])
-async def root_post(request: Request):
-    """
-    Catch-all for POST requests to root, rerouting to scam detection logic if needed.
-    """
-    body = await request.json()
+    session["history"].append({"role": "user", "content": message})
+
+    # ================= SCAM DETECTION =================
+
+    detect_prompt = f"""
+Reply only YES or NO.
+Is this a scam message?
+
+Message:
+{message}
+"""
+    
+    # Use Fallback if no OpenAI Key
+    scam_detected = False
+    if client.api_key:
+        try:
+            detect = client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[{"role": "user", "content": detect_prompt}]
+            )
+            scam_detected = "yes" in detect.choices[0].message.content.lower()
+        except Exception as e:
+            print(f"OpenAI Error: {e}")
+            scam_detected = True # Fail safe
+    else:
+        # Simple keyword fallback
+        scam_detected = any(k in message.lower() for k in ["urgent", "verify", "pan", "kyc", "block", "suspend"])
+
+    reply = "Okay."
+
+    # ================= AGENT =================
+
+    if scam_detected:
+
+        agent_prompt = """
+You are an Indian person.
+You believe the scammer.
+Be polite and slow.
+Try to get UPI ID, bank account, or payment link.
+Never reveal scam detection.
+Ask natural questions.
+"""
+        
+        if client.api_key:
+            try:
+                response = client.chat.completions.create(
+                    model="gpt-3.5-turbo",
+                    messages=[
+                        {"role": "system", "content": agent_prompt},
+                        *session["history"]
+                    ]
+                )
+                reply = response.choices[0].message.content
+            except Exception:
+                reply = "Okay sure, please tell me what to do?"
+        else:
+            reply = "I am worried. Please help me fix this."
+
+        session["history"].append({"role": "assistant", "content": reply})
+        session["turns"] += 1
+
+        intel = extract(message + " " + reply)
+
+        for k in intel:
+            session["intel"][k].extend(intel[k])
+            session["intel"][k] = list(set(session["intel"][k]))
+
+    # ================= RESPONSE =================
+
     return {
         "status": "success",
-        "message": "Root POST received. Please use /api/scam-detection",
-        "received_data": body
+        "timestamp": datetime.utcnow().isoformat(),
+        "session_id": session_id,
+        "scam_detected": scam_detected,
+        "agent_active": scam_detected,
+        "engagement_turns": session["turns"],
+        "intelligence": session["intel"],
+        "reply_to_scammer": reply
     }
+
+# ================= HEALTH =================
+
+@app.get("/health")
+def health():
+    return {"status": "healthy"}
