@@ -51,7 +51,16 @@ def extract(text):
 @app.head("/")
 @app.get("/")
 def ping():
-    return {"status": "ready"}
+    return {
+        "status": "ready",
+        "service": "Agentic Honeypot API",
+        "version": "1.0",
+        "endpoints": {
+            "scam_detection": "POST /",
+            "health": "GET /health"
+        },
+        "authentication": "x-api-key header required for POST requests"
+    }
 
 @app.post("/")
 async def honeypot(request: Request, x_api_key: str = Header(None)):
