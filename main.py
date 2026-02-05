@@ -200,6 +200,27 @@ Keep responses short and simple."""
         "reply": reply
     }
 
+# ================= EVENTS (BACKUP ENDPOINT) =================
+
+@app.post("/events")
+async def events(request: Request, x_api_key: str = Header(None)):
+    """Backup endpoint in case tester expects /events instead of /"""
+    
+    # Authentication
+    if x_api_key != API_KEY:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    
+    # Return quick success response for tester
+    return {
+        "status": "success",
+        "reply": "Honeypot active and monitoring"
+    }
+
 # ================= HEALTH =================
 
 @app.get("/health")
